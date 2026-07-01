@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: snaplink
+      POSTGRES_PASSWORD: snaplink
+      POSTGRES_DB: snaplink
+    ports:
+      - "5434:5432"
+    volumes:
+      - snaplink_pgdata:/var/lib/postgresql/data
+
+volumes:
+  snaplink_pgdata:
