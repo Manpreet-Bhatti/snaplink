@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import os
 import secrets
@@ -5,13 +6,16 @@ import string
 from urllib.parse import urlparse
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
+from user_agents import parse as parse_ua
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://snaplink:snaplink@localhost:5434/snaplink"
 )
+# ponytail: static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
+IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
 
 ALPHABET = string.ascii_letters + string.digits
 CODE_LEN = 7
@@ -35,11 +39,29 @@ def init_db():
                 short_code VARCHAR(16) UNIQUE NOT NULL,
                 target_url TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                is_active BOOLEAN NOT NULL DEFAULT true
+                is_active BOOLEAN NOT NULL DEFAULT true,
+                click_count BIGINT NOT NULL DEFAULT 0
             )
             """
         )
         conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS click_events (
+                id BIGSERIAL PRIMARY KEY,
+                link_id UUID NOT NULL REFERENCES links(id),
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                referrer TEXT,
+                device_type VARCHAR(16),
+                browser VARCHAR(64),
+                os VARCHAR(64),
+                ip_hash VARCHAR(64)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS click_events_link_id_idx ON click_events (link_id)"
+        )
 
 
 def is_safe_target(url: str) -> bool:
@@ -114,16 +136,55 @@ def create_link(body: CreateLinkRequest):
     }
 
 
+def hash_ip(ip: str) -> str:
+    return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()
+
+
+def client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) -> None:
+    ua = parse_ua(ua_string)
+    device_type = (
+        "bot" if ua.is_bot else
+        "mobile" if ua.is_mobile else
+        "tablet" if ua.is_tablet else
+        "desktop"
+    )
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO click_events (link_id, referrer, device_type, browser, os, ip_hash)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (link_id, referrer, device_type, ua.browser.family, ua.os.family, hash_ip(ip)),
+        )
+        conn.execute(
+            "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (link_id,)
+        )
+
+
 @app.get("/{short_code}")
-def redirect(short_code: str):
+def redirect(short_code: str, request: Request, background_tasks: BackgroundTasks):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT target_url, is_active FROM links WHERE short_code = %s",
+            "SELECT id, target_url, is_active FROM links WHERE short_code = %s",
             (short_code,),
         ).fetchone()
     if row is None:
         raise HTTPException(404, "not found")
-    target_url, is_active = row
+    link_id, target_url, is_active = row
     if not is_active:
         raise HTTPException(410, "link disabled")
+    background_tasks.add_task(
+        record_click,
+        link_id,
+        request.headers.get("referer"),
+        request.headers.get("user-agent", ""),
+        client_ip(request),
+    )
     return RedirectResponse(target_url, status_code=302)
