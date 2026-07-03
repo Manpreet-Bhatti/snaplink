@@ -14,7 +14,7 @@ from user_agents import parse as parse_ua
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://snaplink:snaplink@localhost:5434/snaplink"
 )
-# ponytail: static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
+# static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
 IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
 
 ALPHABET = string.ascii_letters + string.digits
@@ -45,7 +45,8 @@ def init_db():
             """
         )
         conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
-        conn.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS click_count BIGINT NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE links ADD COLUMN IF NOT EXISTS click_count BIGINT NOT NULL DEFAULT 0")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS click_events (
@@ -93,7 +94,8 @@ class CreateLinkRequest(BaseModel):
     @classmethod
     def validate_target(cls, v: str) -> str:
         if not is_safe_target(v):
-            raise ValueError("target_url must be http(s) and not point to a private/internal address")
+            raise ValueError(
+                "target_url must be http(s) and not point to a private/internal address")
         return v
 
     @field_validator("custom_slug")
@@ -128,7 +130,8 @@ def create_link(body: CreateLinkRequest):
                 except psycopg.errors.UniqueViolation:
                     continue
             else:
-                raise HTTPException(500, "could not generate a unique code, retry")
+                raise HTTPException(
+                    500, "could not generate a unique code, retry")
 
     return {
         "short_code": code,
@@ -162,14 +165,17 @@ def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) ->
             INSERT INTO click_events (link_id, referrer, device_type, browser, os, ip_hash)
             VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (link_id, referrer, device_type, ua.browser.family, ua.os.family, hash_ip(ip)),
+            (link_id, referrer, device_type,
+             ua.browser.family, ua.os.family, hash_ip(ip)),
         )
         conn.execute(
-            "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (link_id,)
+            "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (
+                link_id,)
         )
 
 
-RANGE_INTERVALS = {"24h": "1 day", "7d": "7 days", "30d": "30 days", "all": None}
+RANGE_INTERVALS = {"24h": "1 day",
+                   "7d": "7 days", "30d": "30 days", "all": None}
 
 
 @app.get("/api/links")
@@ -194,14 +200,16 @@ def list_links():
 @app.get("/api/links/{short_code}/analytics")
 def link_analytics(short_code: str, range: str = "7d"):
     if range not in RANGE_INTERVALS:
-        raise HTTPException(400, f"range must be one of {list(RANGE_INTERVALS)}")
+        raise HTTPException(
+            400, f"range must be one of {list(RANGE_INTERVALS)}")
     interval = RANGE_INTERVALS[range]
     since_clause = f"AND occurred_at >= now() - interval '{interval}'" if interval else ""
-    # ponytail: string-built interval clause is safe here — `interval` only ever comes
+    # string-built interval clause is safe here — `interval` only ever comes
     # from RANGE_INTERVALS' fixed values above, never from the request directly
 
     with get_conn() as conn:
-        row = conn.execute("SELECT id FROM links WHERE short_code = %s", (short_code,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM links WHERE short_code = %s", (short_code,)).fetchone()
         if row is None:
             raise HTTPException(404, "not found")
         link_id = row[0]
