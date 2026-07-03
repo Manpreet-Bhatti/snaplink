@@ -45,6 +45,7 @@ def init_db():
             """
         )
         conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+        conn.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS click_count BIGINT NOT NULL DEFAULT 0")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS click_events (
@@ -166,6 +167,100 @@ def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) ->
         conn.execute(
             "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (link_id,)
         )
+
+
+RANGE_INTERVALS = {"24h": "1 day", "7d": "7 days", "30d": "30 days", "all": None}
+
+
+@app.get("/api/links")
+def list_links():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT short_code, target_url, click_count, created_at, is_active "
+            "FROM links ORDER BY created_at DESC"
+        ).fetchall()
+    return [
+        {
+            "short_code": r[0],
+            "target_url": r[1],
+            "click_count": r[2],
+            "created_at": r[3],
+            "is_active": r[4],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/links/{short_code}/analytics")
+def link_analytics(short_code: str, range: str = "7d"):
+    if range not in RANGE_INTERVALS:
+        raise HTTPException(400, f"range must be one of {list(RANGE_INTERVALS)}")
+    interval = RANGE_INTERVALS[range]
+    since_clause = f"AND occurred_at >= now() - interval '{interval}'" if interval else ""
+    # ponytail: string-built interval clause is safe here — `interval` only ever comes
+    # from RANGE_INTERVALS' fixed values above, never from the request directly
+
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM links WHERE short_code = %s", (short_code,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "not found")
+        link_id = row[0]
+
+        total_clicks, unique_visitors = conn.execute(
+            f"""
+            SELECT count(*), count(DISTINCT ip_hash)
+            FROM click_events WHERE link_id = %s {since_clause}
+            """,
+            (link_id,),
+        ).fetchone()
+
+        series = conn.execute(
+            f"""
+            SELECT date_trunc('day', occurred_at)::date AS day, count(*)
+            FROM click_events WHERE link_id = %s {since_clause}
+            GROUP BY day ORDER BY day
+            """,
+            (link_id,),
+        ).fetchall()
+
+        referrers = conn.execute(
+            f"""
+            SELECT coalesce(referrer, 'Direct'), count(*)
+            FROM click_events WHERE link_id = %s {since_clause}
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 8
+            """,
+            (link_id,),
+        ).fetchall()
+
+        devices = conn.execute(
+            f"""
+            SELECT device_type, count(*)
+            FROM click_events WHERE link_id = %s {since_clause}
+            GROUP BY 1 ORDER BY 2 DESC
+            """,
+            (link_id,),
+        ).fetchall()
+
+        browsers = conn.execute(
+            f"""
+            SELECT browser, count(*)
+            FROM click_events WHERE link_id = %s {since_clause}
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 6
+            """,
+            (link_id,),
+        ).fetchall()
+
+    peak_day = max(series, key=lambda r: r[1])[0] if series else None
+
+    return {
+        "total_clicks": total_clicks,
+        "unique_visitors": unique_visitors,
+        "peak_day": peak_day,
+        "series": [{"date": str(d), "clicks": c} for d, c in series],
+        "referrers": [{"referrer": r, "clicks": c} for r, c in referrers],
+        "devices": [{"device_type": d, "clicks": c} for d, c in devices],
+        "browsers": [{"browser": b, "clicks": c} for b, c in browsers],
+    }
 
 
 @app.get("/{short_code}")
