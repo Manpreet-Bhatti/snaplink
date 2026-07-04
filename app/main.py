@@ -20,7 +20,7 @@ DATABASE_URL = os.environ.get(
 )
 # static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
 IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
-# ponytail: dev default, must be a real rotated secret before this ships past a portfolio demo
+# dev default, must be a real rotated secret before this ships past a portfolio demo
 SECRET_KEY = os.environ.get("SECRET_KEY", "snaplink-dev-secret").encode()
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
@@ -105,12 +105,13 @@ def gen_code() -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
 
 
-# ponytail: hand-rolled HMAC token instead of a JWT lib — same tamper-proof
+# hand-rolled HMAC token instead of a JWT lib — same tamper-proof
 # guarantee in ~15 lines, no dependency. Swap to PyJWT if you need standard
 # JWT interop (mobile SDKs, API gateways) later.
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=64)
+    digest = hashlib.scrypt(password.encode(), salt=salt,
+                            n=16384, r=8, p=1, dklen=64)
     return salt.hex() + "$" + digest.hex()
 
 
@@ -197,7 +198,8 @@ def register(body: RegisterRequest):
 def login(body: LoginRequest):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, password_hash FROM users WHERE email = %s", (body.email,)
+            "SELECT id, password_hash FROM users WHERE email = %s", (
+                body.email,)
         ).fetchone()
         if not row or not verify_password(body.password, row[1]):
             raise HTTPException(401, "invalid email or password")
