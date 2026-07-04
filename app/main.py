@@ -1,12 +1,16 @@
+import base64
 import hashlib
+import hmac
 import ipaddress
+import json
 import os
 import secrets
 import string
+import time
 from urllib.parse import urlparse
 
 import psycopg
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
 from user_agents import parse as parse_ua
@@ -16,6 +20,9 @@ DATABASE_URL = os.environ.get(
 )
 # static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
 IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
+# dev default, must be a real rotated secret before this ships past a portfolio demo
+SECRET_KEY = os.environ.get("SECRET_KEY", "snaplink-dev-secret").encode()
+TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 ALPHABET = string.ascii_letters + string.digits
 CODE_LEN = 7
@@ -47,6 +54,18 @@ def init_db():
         conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
         conn.execute(
             "ALTER TABLE links ADD COLUMN IF NOT EXISTS click_count BIGINT NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email VARCHAR UNIQUE NOT NULL,
+                password_hash VARCHAR NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        conn.execute(
+            "ALTER TABLE links ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS click_events (
@@ -86,6 +105,107 @@ def gen_code() -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
 
 
+# hand-rolled HMAC token instead of a JWT lib — same tamper-proof
+# guarantee in ~15 lines, no dependency. Swap to PyJWT if you need standard
+# JWT interop (mobile SDKs, API gateways) later.
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt,
+                            n=16384, r=8, p=1, dklen=64)
+    return salt.hex() + "$" + digest.hex()
+
+
+def verify_password(password: str, stored: str) -> bool:
+    salt_hex, _, digest_hex = stored.partition("$")
+    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(
+        salt_hex), n=16384, r=8, p=1, dklen=64)
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+def make_token(user_id: str, email: str) -> str:
+    payload = json.dumps(
+        {"sub": user_id, "email": email, "exp": time.time() + TOKEN_TTL_SECONDS}).encode()
+    sig = hmac.new(SECRET_KEY, payload, hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(payload).decode() + "." + sig
+
+
+def verify_token(token: str) -> dict:
+    try:
+        payload_b64, sig = token.rsplit(".", 1)
+        payload = base64.urlsafe_b64decode(payload_b64.encode())
+        expected = hmac.new(SECRET_KEY, payload, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            raise ValueError("bad signature")
+        data = json.loads(payload)
+        if data["exp"] < time.time():
+            raise ValueError("expired")
+        return data
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(401, "invalid or expired token")
+
+
+def get_current_user(authorization: str | None = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "missing bearer token")
+    return verify_token(authorization.removeprefix("Bearer "))
+
+
+def get_current_user_optional(authorization: str | None = Header(None)) -> dict | None:
+    if not authorization:
+        return None
+    return get_current_user(authorization)
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if "@" not in v or len(v) > 320:
+            raise ValueError("invalid email")
+        return v.lower()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("password must be at least 8 characters")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/register", status_code=201)
+def register(body: RegisterRequest):
+    with get_conn() as conn:
+        try:
+            row = conn.execute(
+                "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+                (body.email, hash_password(body.password)),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(409, "email already registered")
+        conn.commit()
+        return {"token": make_token(str(row[0]), body.email), "user": {"id": row[0], "email": body.email}}
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, password_hash FROM users WHERE email = %s", (
+                body.email,)
+        ).fetchone()
+        if not row or not verify_password(body.password, row[1]):
+            raise HTTPException(401, "invalid email or password")
+        return {"token": make_token(str(row[0]), body.email), "user": {"id": row[0], "email": body.email}}
+
+
 class CreateLinkRequest(BaseModel):
     target_url: str
     custom_slug: str | None = None
@@ -107,13 +227,14 @@ class CreateLinkRequest(BaseModel):
 
 
 @app.post("/api/links", status_code=201)
-def create_link(body: CreateLinkRequest):
+def create_link(body: CreateLinkRequest, user: dict | None = Depends(get_current_user_optional)):
+    user_id = user["sub"] if user else None
     with get_conn() as conn:
         if body.custom_slug:
             try:
                 conn.execute(
-                    "INSERT INTO links (short_code, target_url) VALUES (%s, %s)",
-                    (body.custom_slug, body.target_url),
+                    "INSERT INTO links (short_code, target_url, user_id) VALUES (%s, %s, %s)",
+                    (body.custom_slug, body.target_url, user_id),
                 )
             except psycopg.errors.UniqueViolation:
                 raise HTTPException(409, "slug already taken")
@@ -123,8 +244,8 @@ def create_link(body: CreateLinkRequest):
                 code = gen_code()
                 try:
                     conn.execute(
-                        "INSERT INTO links (short_code, target_url) VALUES (%s, %s)",
-                        (code, body.target_url),
+                        "INSERT INTO links (short_code, target_url, user_id) VALUES (%s, %s, %s)",
+                        (code, body.target_url, user_id),
                     )
                     break
                 except psycopg.errors.UniqueViolation:
@@ -179,11 +300,12 @@ RANGE_INTERVALS = {"24h": "1 day",
 
 
 @app.get("/api/links")
-def list_links():
+def list_links(user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT short_code, target_url, click_count, created_at, is_active "
-            "FROM links ORDER BY created_at DESC"
+            "FROM links WHERE user_id = %s ORDER BY created_at DESC",
+            (user["sub"],),
         ).fetchall()
     return [
         {
@@ -198,7 +320,7 @@ def list_links():
 
 
 @app.get("/api/links/{short_code}/analytics")
-def link_analytics(short_code: str, range: str = "7d"):
+def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_current_user)):
     if range not in RANGE_INTERVALS:
         raise HTTPException(
             400, f"range must be one of {list(RANGE_INTERVALS)}")
@@ -209,10 +331,12 @@ def link_analytics(short_code: str, range: str = "7d"):
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id FROM links WHERE short_code = %s", (short_code,)).fetchone()
+            "SELECT id, user_id FROM links WHERE short_code = %s", (short_code,)).fetchone()
         if row is None:
             raise HTTPException(404, "not found")
-        link_id = row[0]
+        link_id, owner_id = row
+        if owner_id is not None and str(owner_id) != user["sub"]:
+            raise HTTPException(403, "not your link")
 
         total_clicks, unique_visitors = conn.execute(
             f"""
