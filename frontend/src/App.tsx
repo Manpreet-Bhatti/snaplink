@@ -50,6 +50,7 @@ function App() {
                 </option>
               ))}
             </select>
+            <img className="qr" src={`/api/links/${shortCode}/qr`} alt="QR code" width={80} height={80} />
           </>
         )}
       </header>

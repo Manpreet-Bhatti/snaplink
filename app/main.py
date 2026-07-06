@@ -1,17 +1,21 @@
 import base64
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import os
 import secrets
 import string
 import time
+from datetime import datetime
 from urllib.parse import urlparse
 
 import psycopg
+import qrcode
+import qrcode.image.svg
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, field_validator
 from user_agents import parse as parse_ua
 
@@ -54,6 +58,10 @@ def init_db():
         conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
         conn.execute(
             "ALTER TABLE links ADD COLUMN IF NOT EXISTS click_count BIGINT NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+        conn.execute(
+            "ALTER TABLE links ADD COLUMN IF NOT EXISTS max_clicks INTEGER")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -209,6 +217,8 @@ def login(body: LoginRequest):
 class CreateLinkRequest(BaseModel):
     target_url: str
     custom_slug: str | None = None
+    expires_at: datetime | None = None
+    max_clicks: int | None = None
 
     @field_validator("target_url")
     @classmethod
@@ -227,14 +237,16 @@ class CreateLinkRequest(BaseModel):
 
 
 @app.post("/api/links", status_code=201)
-def create_link(body: CreateLinkRequest, user: dict | None = Depends(get_current_user_optional)):
+def create_link(body: CreateLinkRequest, request: Request, user: dict | None = Depends(get_current_user_optional)):
     user_id = user["sub"] if user else None
+    params = (body.target_url, user_id, body.expires_at, body.max_clicks)
     with get_conn() as conn:
         if body.custom_slug:
             try:
                 conn.execute(
-                    "INSERT INTO links (short_code, target_url, user_id) VALUES (%s, %s, %s)",
-                    (body.custom_slug, body.target_url, user_id),
+                    "INSERT INTO links (short_code, target_url, user_id, expires_at, max_clicks) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (body.custom_slug, *params),
                 )
             except psycopg.errors.UniqueViolation:
                 raise HTTPException(409, "slug already taken")
@@ -244,8 +256,9 @@ def create_link(body: CreateLinkRequest, user: dict | None = Depends(get_current
                 code = gen_code()
                 try:
                     conn.execute(
-                        "INSERT INTO links (short_code, target_url, user_id) VALUES (%s, %s, %s)",
-                        (code, body.target_url, user_id),
+                        "INSERT INTO links (short_code, target_url, user_id, expires_at, max_clicks) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (code, *params),
                     )
                     break
                 except psycopg.errors.UniqueViolation:
@@ -254,10 +267,12 @@ def create_link(body: CreateLinkRequest, user: dict | None = Depends(get_current
                 raise HTTPException(
                     500, "could not generate a unique code, retry")
 
+    base = str(request.base_url)
     return {
         "short_code": code,
-        "short_url": f"/{code}",
+        "short_url": f"{base}{code}",
         "target_url": body.target_url,
+        "qr_url": f"{base}api/links/{code}/qr",
     }
 
 
@@ -395,18 +410,37 @@ def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_
     }
 
 
+@app.get("/api/links/{short_code}/qr")
+def link_qr(short_code: str, request: Request):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links WHERE short_code = %s", (short_code,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "not found")
+    img = qrcode.make(f"{request.base_url}{short_code}",
+                       image_factory=qrcode.image.svg.SvgImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    return Response(buf.getvalue(), media_type="image/svg+xml")
+
+
 @app.get("/{short_code}")
 def redirect(short_code: str, request: Request, background_tasks: BackgroundTasks):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, target_url, is_active FROM links WHERE short_code = %s",
+            "SELECT id, target_url, is_active, expires_at, max_clicks, click_count "
+            "FROM links WHERE short_code = %s",
             (short_code,),
         ).fetchone()
     if row is None:
         raise HTTPException(404, "not found")
-    link_id, target_url, is_active = row
+    link_id, target_url, is_active, expires_at, max_clicks, click_count = row
     if not is_active:
         raise HTTPException(410, "link disabled")
+    if expires_at and expires_at < datetime.now(expires_at.tzinfo):
+        raise HTTPException(410, "link expired")
+    if max_clicks is not None and click_count >= max_clicks:
+        raise HTTPException(410, "link reached max clicks")
     background_tasks.add_task(
         record_click,
         link_id,
