@@ -4,3 +4,4 @@ psycopg[binary]
 pydantic
 user-agents
 qrcode
+redis
