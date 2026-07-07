@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import psycopg
 import qrcode
 import qrcode.image.svg
+import redis
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, field_validator
@@ -22,6 +23,8 @@ from user_agents import parse as parse_ua
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://snaplink:snaplink@localhost:5434/snaplink"
 )
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380/0")
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # static salt is fine pre-launch; move to a rotated secret if this ships past a portfolio demo
 IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
 # dev default, must be a real rotated secret before this ships past a portfolio demo
@@ -90,6 +93,16 @@ def init_db():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS click_events_link_id_idx ON click_events (link_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS click_daily_rollup (
+                link_id UUID NOT NULL REFERENCES links(id),
+                day DATE NOT NULL,
+                clicks BIGINT NOT NULL DEFAULT 0,
+                PRIMARY KEY (link_id, day)
+            )
+            """
         )
 
 
@@ -308,6 +321,14 @@ def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) ->
             "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (
                 link_id,)
         )
+        conn.execute(
+            """
+            INSERT INTO click_daily_rollup (link_id, day, clicks)
+            VALUES (%s, current_date, 1)
+            ON CONFLICT (link_id, day) DO UPDATE SET clicks = click_daily_rollup.clicks + 1
+            """,
+            (link_id,),
+        )
 
 
 RANGE_INTERVALS = {"24h": "1 day",
@@ -361,11 +382,12 @@ def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_
             (link_id,),
         ).fetchone()
 
+        rollup_since = f"AND day >= (now() - interval '{interval}')::date" if interval else ""
         series = conn.execute(
             f"""
-            SELECT date_trunc('day', occurred_at)::date AS day, count(*)
-            FROM click_events WHERE link_id = %s {since_clause}
-            GROUP BY day ORDER BY day
+            SELECT day, clicks
+            FROM click_daily_rollup WHERE link_id = %s {rollup_since}
+            ORDER BY day
             """,
             (link_id,),
         ).fetchall()
@@ -424,28 +446,55 @@ def link_qr(short_code: str, request: Request):
     return Response(buf.getvalue(), media_type="image/svg+xml")
 
 
+def _cache_key(short_code: str) -> str:
+    return f"link:{short_code}"
+
+
 @app.get("/{short_code}")
 def redirect(short_code: str, request: Request, background_tasks: BackgroundTasks):
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT id, target_url, is_active, expires_at, max_clicks, click_count "
-            "FROM links WHERE short_code = %s",
-            (short_code,),
-        ).fetchone()
-    if row is None:
-        raise HTTPException(404, "not found")
-    link_id, target_url, is_active, expires_at, max_clicks, click_count = row
-    if not is_active:
+    cached = redis_client.get(_cache_key(short_code))
+    if cached is not None:
+        link = json.loads(cached)
+    else:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT id, target_url, is_active, expires_at, max_clicks, click_count "
+                "FROM links WHERE short_code = %s",
+                (short_code,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404, "not found")
+        link_id, target_url, is_active, expires_at, max_clicks, click_count = row
+        link = {
+            "id": str(link_id),
+            "target_url": target_url,
+            "is_active": is_active,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "max_clicks": max_clicks,
+        }
+        # cached without a TTL: is_active/expires_at/max_clicks are set at creation
+        # and never mutated elsewhere today. A future PATCH/DELETE endpoint must
+        # DEL this key on write.
+        redis_client.set(_cache_key(short_code), json.dumps(link))
+        if max_clicks is not None:
+            redis_client.set(f"clicks:{short_code}", click_count, nx=True)
+
+    if not link["is_active"]:
         raise HTTPException(410, "link disabled")
+    expires_at = datetime.fromisoformat(
+        link["expires_at"]) if link["expires_at"] else None
     if expires_at and expires_at < datetime.now(expires_at.tzinfo):
         raise HTTPException(410, "link expired")
-    if max_clicks is not None and click_count >= max_clicks:
-        raise HTTPException(410, "link reached max clicks")
+    if link["max_clicks"] is not None:
+        count = redis_client.incr(f"clicks:{short_code}")
+        if count > link["max_clicks"]:
+            raise HTTPException(410, "link reached max clicks")
+
     background_tasks.add_task(
         record_click,
-        link_id,
+        link["id"],
         request.headers.get("referer"),
         request.headers.get("user-agent", ""),
         client_ip(request),
     )
-    return RedirectResponse(target_url, status_code=302)
+    return RedirectResponse(link["target_url"], status_code=302)
