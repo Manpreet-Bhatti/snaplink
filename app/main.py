@@ -30,6 +30,8 @@ IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
 # dev default, must be a real rotated secret before this ships past a portfolio demo
 SECRET_KEY = os.environ.get("SECRET_KEY", "snaplink-dev-secret").encode()
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
+RATE_LIMIT_CREATE_PER_MIN = int(os.environ.get("RATE_LIMIT_CREATE_PER_MIN", "20"))
+RATE_LIMIT_AUTH_PER_MIN = int(os.environ.get("RATE_LIMIT_AUTH_PER_MIN", "10"))
 
 ALPHABET = string.ascii_letters + string.digits
 CODE_LEN = 7
@@ -201,7 +203,28 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/api/auth/register", status_code=201)
+def client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# fixed-window counter on redis (already a dependency) — good enough for
+# abuse prevention on a portfolio app; swap for a sliding-window/token-bucket
+# lib if you need smoother limiting under real traffic
+def rate_limiter(bucket: str, limit_per_min: int):
+    def check(request: Request) -> None:
+        key = f"ratelimit:{bucket}:{client_ip(request)}"
+        count = redis_client.incr(key)
+        if count == 1:
+            redis_client.expire(key, 60)
+        if count > limit_per_min:
+            raise HTTPException(429, "too many requests, slow down")
+    return check
+
+
+@app.post("/api/auth/register", status_code=201, dependencies=[Depends(rate_limiter("auth", RATE_LIMIT_AUTH_PER_MIN))])
 def register(body: RegisterRequest):
     with get_conn() as conn:
         try:
@@ -215,7 +238,7 @@ def register(body: RegisterRequest):
         return {"token": make_token(str(row[0]), body.email), "user": {"id": row[0], "email": body.email}}
 
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", dependencies=[Depends(rate_limiter("auth", RATE_LIMIT_AUTH_PER_MIN))])
 def login(body: LoginRequest):
     with get_conn() as conn:
         row = conn.execute(
@@ -249,7 +272,7 @@ class CreateLinkRequest(BaseModel):
         return v
 
 
-@app.post("/api/links", status_code=201)
+@app.post("/api/links", status_code=201, dependencies=[Depends(rate_limiter("create_link", RATE_LIMIT_CREATE_PER_MIN))])
 def create_link(body: CreateLinkRequest, request: Request, user: dict | None = Depends(get_current_user_optional)):
     user_id = user["sub"] if user else None
     params = (body.target_url, user_id, body.expires_at, body.max_clicks)
@@ -291,13 +314,6 @@ def create_link(body: CreateLinkRequest, request: Request, user: dict | None = D
 
 def hash_ip(ip: str) -> str:
     return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()
-
-
-def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
 
 
 def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) -> None:

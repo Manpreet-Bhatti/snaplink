@@ -15,5 +15,25 @@ services:
     ports:
       - "6380:6379"
 
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://snaplink:snaplink@db:5432/snaplink
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env, see .env.example}
+      IP_HASH_SALT: ${IP_HASH_SALT:?set IP_HASH_SALT in .env, see .env.example}
+    depends_on:
+      - db
+      - redis
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - app
+    ports:
+      - "8080:80"
+
 volumes:
   snaplink_pgdata:
