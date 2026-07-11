@@ -159,3 +159,72 @@ main {
   padding: 24px 0;
   text-align: center;
 }
+
+input,
+button {
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+}
+
+input {
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+button {
+  background: var(--series-1);
+  color: #fff;
+  border-color: transparent;
+  cursor: pointer;
+}
+
+button.link-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  padding: 4px 6px;
+}
+
+button.danger {
+  color: var(--series-3);
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.link-row-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.truncate {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error {
+  color: var(--series-3);
+  font-size: 13px;
+}
+
+.auth {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth .card {
+  width: 320px;
+}
