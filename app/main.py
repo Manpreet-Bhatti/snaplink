@@ -393,6 +393,29 @@ def list_links(user: dict = Depends(get_current_user)):
     ]
 
 
+@app.get("/api/links/{short_code}")
+def get_link(short_code: str, user: dict = Depends(get_current_user)):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT short_code, target_url, click_count, created_at, is_active, "
+            "expires_at, max_clicks, user_id FROM links WHERE short_code = %s",
+            (short_code,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "not found")
+    if row[7] is None or str(row[7]) != user["sub"]:
+        raise HTTPException(403, "not your link")
+    return {
+        "short_code": row[0],
+        "target_url": row[1],
+        "click_count": row[2],
+        "created_at": row[3],
+        "is_active": row[4],
+        "expires_at": row[5],
+        "max_clicks": row[6],
+    }
+
+
 class UpdateLinkRequest(BaseModel):
     is_active: bool | None = None
     expires_at: datetime | None = None
