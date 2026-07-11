@@ -393,6 +393,50 @@ def list_links(user: dict = Depends(get_current_user)):
     ]
 
 
+class UpdateLinkRequest(BaseModel):
+    is_active: bool | None = None
+    expires_at: datetime | None = None
+
+
+def _owned_link_id(conn, short_code: str, user_sub: str) -> str:
+    row = conn.execute(
+        "SELECT id, user_id FROM links WHERE short_code = %s", (short_code,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "not found")
+    link_id, owner_id = row
+    if owner_id is None or str(owner_id) != user_sub:
+        raise HTTPException(403, "not your link")
+    return link_id
+
+
+@app.patch("/api/links/{short_code}")
+def update_link(short_code: str, body: UpdateLinkRequest, user: dict = Depends(get_current_user)):
+    with get_conn() as conn:
+        _owned_link_id(conn, short_code, user["sub"])
+        fields = body.model_dump(exclude_unset=True)
+        if fields:
+            set_clause = ", ".join(f"{k} = %s" for k in fields)
+            conn.execute(
+                f"UPDATE links SET {set_clause} WHERE short_code = %s",
+                (*fields.values(), short_code),
+            )
+    # redirect cache has no TTL (see redirect()) — must DEL on every write
+    redis_client.delete(_cache_key(short_code))
+    return {"short_code": short_code, "updated": True}
+
+
+@app.delete("/api/links/{short_code}", status_code=204)
+def delete_link(short_code: str, user: dict = Depends(get_current_user)):
+    with get_conn() as conn:
+        link_id = _owned_link_id(conn, short_code, user["sub"])
+        conn.execute(
+            "DELETE FROM click_daily_rollup WHERE link_id = %s", (link_id,))
+        conn.execute("DELETE FROM click_events WHERE link_id = %s", (link_id,))
+        conn.execute("DELETE FROM links WHERE id = %s", (link_id,))
+    redis_client.delete(_cache_key(short_code))
+    redis_client.delete(f"clicks:{short_code}")
+
+
 @app.get("/api/links/{short_code}/analytics")
 def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_current_user)):
     if range not in RANGE_INTERVALS:
