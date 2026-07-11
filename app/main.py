@@ -8,6 +8,8 @@ import os
 import secrets
 import string
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -128,6 +130,25 @@ def is_safe_target(url: str) -> bool:
     except ValueError:
         pass  # not an IP literal, ok
     return True
+
+
+# fail open: no API key or a broken/slow Google API shouldn't block link
+# creation on a portfolio app. Real deployment would fail closed + alert.
+def check_safe_browsing(url: str) -> bool:
+    api_key = os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY")
+    if not api_key:
+        return True
+    qs = urllib.parse.urlencode({"key": api_key, "urls": [url]}, doseq=True)
+    req = urllib.request.Request(
+        f"https://safebrowsing.googleapis.com/v5/urls:search?{qs}",
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            result = json.loads(resp.read())
+        return not result.get("threats")
+    except Exception:
+        return True
 
 
 def gen_code() -> str:
@@ -280,6 +301,8 @@ class CreateLinkRequest(BaseModel):
 
 @app.post("/api/links", status_code=201, dependencies=[Depends(rate_limiter("create_link", RATE_LIMIT_CREATE_PER_MIN))])
 def create_link(body: CreateLinkRequest, request: Request, user: dict | None = Depends(get_current_user_optional)):
+    if not check_safe_browsing(body.target_url):
+        raise HTTPException(422, "target URL flagged as unsafe")
     user_id = user["sub"] if user else None
     params = (body.target_url, user_id, body.expires_at, body.max_clicks)
     with get_conn() as conn:
