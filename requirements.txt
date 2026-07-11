@@ -5,3 +5,4 @@ pydantic
 user-agents
 qrcode
 redis
+geoip2

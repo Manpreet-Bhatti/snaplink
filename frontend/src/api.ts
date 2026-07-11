@@ -14,6 +14,7 @@ export interface Analytics {
   referrers: { referrer: string; clicks: number }[];
   devices: { device_type: string; clicks: number }[];
   browsers: { browser: string; clicks: number }[];
+  countries: { country_code: string; clicks: number }[];
 }
 
 export type Range = "24h" | "7d" | "30d" | "all";
@@ -24,8 +25,13 @@ export async function fetchLinks(): Promise<LinkSummary[]> {
   return res.json();
 }
 
-export async function fetchAnalytics(shortCode: string, range: Range): Promise<Analytics> {
-  const res = await fetch(`/api/links/${encodeURIComponent(shortCode)}/analytics?range=${range}`);
+export async function fetchAnalytics(
+  shortCode: string,
+  range: Range,
+): Promise<Analytics> {
+  const res = await fetch(
+    `/api/links/${encodeURIComponent(shortCode)}/analytics?range=${range}`,
+  );
   if (!res.ok) throw new Error(`GET analytics failed: ${res.status}`);
   return res.json();
 }

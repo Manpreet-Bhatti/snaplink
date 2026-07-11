@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
-import { fetchAnalytics, fetchLinks, type Analytics, type LinkSummary, type Range } from "./api";
+import {
+  fetchAnalytics,
+  fetchLinks,
+  type Analytics,
+  type LinkSummary,
+  type Range,
+} from "./api";
 import StatTile from "./components/StatTile";
 import ClicksOverTime from "./components/ClicksOverTime";
 import TopReferrers from "./components/TopReferrers";
-import CategoryDonut, { deviceColor, slotColor } from "./components/CategoryDonut";
+import Geography from "./components/Geography";
+import CategoryDonut, {
+  deviceColor,
+  slotColor,
+} from "./components/CategoryDonut";
 
 const RANGES: { value: Range; label: string }[] = [
   { value: "24h", label: "Last 24h" },
@@ -36,44 +46,68 @@ function App() {
         <h1>SnapLink Analytics</h1>
         {links.length > 0 && (
           <>
-            <select value={shortCode} onChange={(e) => setShortCode(e.target.value)}>
+            <select
+              value={shortCode}
+              onChange={(e) => setShortCode(e.target.value)}
+            >
               {links.map((l) => (
                 <option key={l.short_code} value={l.short_code}>
                   {l.short_code} — {l.target_url}
                 </option>
               ))}
             </select>
-            <select value={range} onChange={(e) => setRange(e.target.value as Range)}>
+            <select
+              value={range}
+              onChange={(e) => setRange(e.target.value as Range)}
+            >
               {RANGES.map((r) => (
                 <option key={r.value} value={r.value}>
                   {r.label}
                 </option>
               ))}
             </select>
-            <img className="qr" src={`/api/links/${shortCode}/qr`} alt="QR code" width={80} height={80} />
+            <img
+              className="qr"
+              src={`/api/links/${shortCode}/qr`}
+              alt="QR code"
+              width={80}
+              height={80}
+            />
           </>
         )}
       </header>
       <main>
-        {links.length === 0 && <p className="empty">No links yet. Create one via POST /api/links.</p>}
+        {links.length === 0 && (
+          <p className="empty">No links yet. Create one via POST /api/links.</p>
+        )}
         {links.length > 0 && analytics && (
           <>
             <div className="tiles">
               <StatTile label="Total clicks" value={analytics.total_clicks} />
-              <StatTile label="Unique visitors" value={analytics.unique_visitors} />
+              <StatTile
+                label="Unique visitors"
+                value={analytics.unique_visitors}
+              />
               <StatTile label="Peak day" value={analytics.peak_day ?? "–"} />
             </div>
             <div className="charts">
               <ClicksOverTime series={analytics.series} />
               <TopReferrers referrers={analytics.referrers} />
+              <Geography countries={analytics.countries} />
               <CategoryDonut
                 title="Devices"
-                rows={analytics.devices.map((d) => ({ name: d.device_type, clicks: d.clicks }))}
+                rows={analytics.devices.map((d) => ({
+                  name: d.device_type,
+                  clicks: d.clicks,
+                }))}
                 colorFor={deviceColor}
               />
               <CategoryDonut
                 title="Browsers"
-                rows={analytics.browsers.map((b) => ({ name: b.browser, clicks: b.clicks }))}
+                rows={analytics.browsers.map((b) => ({
+                  name: b.browser,
+                  clicks: b.clicks,
+                }))}
                 colorFor={slotColor}
               />
             </div>

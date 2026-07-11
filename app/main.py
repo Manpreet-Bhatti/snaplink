@@ -11,6 +11,8 @@ import time
 from datetime import datetime
 from urllib.parse import urlparse
 
+import geoip2.database
+import geoip2.errors
 import psycopg
 import qrcode
 import qrcode.image.svg
@@ -30,7 +32,9 @@ IP_HASH_SALT = os.environ.get("IP_HASH_SALT", "snaplink-dev-salt")
 # dev default, must be a real rotated secret before this ships past a portfolio demo
 SECRET_KEY = os.environ.get("SECRET_KEY", "snaplink-dev-secret").encode()
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
-RATE_LIMIT_CREATE_PER_MIN = int(os.environ.get("RATE_LIMIT_CREATE_PER_MIN", "20"))
+GEOIP_DB_PATH = os.environ.get("GEOIP_DB_PATH", "geoip/GeoLite2-Country.mmdb")
+RATE_LIMIT_CREATE_PER_MIN = int(
+    os.environ.get("RATE_LIMIT_CREATE_PER_MIN", "20"))
 RATE_LIMIT_AUTH_PER_MIN = int(os.environ.get("RATE_LIMIT_AUTH_PER_MIN", "10"))
 
 ALPHABET = string.ascii_letters + string.digits
@@ -93,6 +97,8 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            "ALTER TABLE click_events ADD COLUMN IF NOT EXISTS country_code CHAR(2)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS click_events_link_id_idx ON click_events (link_id)"
         )
@@ -316,6 +322,21 @@ def hash_ip(ip: str) -> str:
     return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()
 
 
+try:
+    _geoip_reader = geoip2.database.Reader(GEOIP_DB_PATH)
+except (FileNotFoundError, ValueError):
+    _geoip_reader = None
+
+
+def lookup_country(ip: str) -> str | None:
+    if _geoip_reader is None:
+        return None
+    try:
+        return _geoip_reader.country(ip).country.iso_code
+    except (geoip2.errors.AddressNotFoundError, ValueError):
+        return None
+
+
 def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) -> None:
     ua = parse_ua(ua_string)
     device_type = (
@@ -324,14 +345,15 @@ def record_click(link_id: str, referrer: str | None, ua_string: str, ip: str) ->
         "tablet" if ua.is_tablet else
         "desktop"
     )
+    country_code = lookup_country(ip)
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO click_events (link_id, referrer, device_type, browser, os, ip_hash)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO click_events (link_id, referrer, device_type, browser, os, ip_hash, country_code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (link_id, referrer, device_type,
-             ua.browser.family, ua.os.family, hash_ip(ip)),
+             ua.browser.family, ua.os.family, hash_ip(ip), country_code),
         )
         conn.execute(
             "UPDATE links SET click_count = click_count + 1 WHERE id = %s", (
@@ -435,6 +457,15 @@ def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_
             (link_id,),
         ).fetchall()
 
+        countries = conn.execute(
+            f"""
+            SELECT coalesce(country_code, 'Unknown'), count(*)
+            FROM click_events WHERE link_id = %s {since_clause}
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+            """,
+            (link_id,),
+        ).fetchall()
+
     peak_day = max(series, key=lambda r: r[1])[0] if series else None
 
     return {
@@ -445,6 +476,7 @@ def link_analytics(short_code: str, range: str = "7d", user: dict = Depends(get_
         "referrers": [{"referrer": r, "clicks": c} for r, c in referrers],
         "devices": [{"device_type": d, "clicks": c} for d, c in devices],
         "browsers": [{"browser": b, "clicks": c} for b, c in browsers],
+        "countries": [{"country_code": cc, "clicks": c} for cc, c in countries],
     }
 
 
@@ -456,7 +488,7 @@ def link_qr(short_code: str, request: Request):
     if row is None:
         raise HTTPException(404, "not found")
     img = qrcode.make(f"{request.base_url}{short_code}",
-                       image_factory=qrcode.image.svg.SvgImage)
+                      image_factory=qrcode.image.svg.SvgImage)
     buf = io.BytesIO()
     img.save(buf)
     return Response(buf.getvalue(), media_type="image/svg+xml")
