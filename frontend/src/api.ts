@@ -56,24 +56,26 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   return res;
 }
 
-export async function register(email: string, password: string): Promise<AuthResponse> {
-  const res = await fetch("/api/auth/register", {
+async function authRequest(path: string, email: string, password: string): Promise<AuthResponse> {
+  const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
-  if (!res.ok) throw new Error(`register failed: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail ?? res.statusText;
+    throw new Error(detail, { cause: res.status });
+  }
   return res.json();
 }
 
+export async function register(email: string, password: string): Promise<AuthResponse> {
+  return authRequest("/api/auth/register", email, password);
+}
+
 export async function login(email: string, password: string): Promise<AuthResponse> {
-  const res = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error(`login failed: ${res.status}`);
-  return res.json();
+  return authRequest("/api/auth/login", email, password);
 }
 
 export async function fetchLinks(): Promise<LinkSummary[]> {

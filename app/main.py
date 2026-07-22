@@ -10,6 +10,7 @@ import string
 import time
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -20,7 +21,7 @@ import qrcode
 import qrcode.image.svg
 import redis
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, field_validator
 from user_agents import parse as parse_ua
 
@@ -44,14 +45,30 @@ CODE_LEN = 7
 RESERVED = {"api", "admin", "login", "static", "docs", "openapi.json"}
 BLOCKED_HOSTS = {"localhost", "0.0.0.0"}
 
-app = FastAPI()
-
 
 def get_conn():
     return psycopg.connect(DATABASE_URL, autocommit=True)
 
 
-@app.on_event("startup")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(psycopg.OperationalError)
+async def db_unavailable_handler(request: Request, exc: psycopg.OperationalError):
+    return JSONResponse(status_code=503, content={"detail": f"database unavailable: {exc}"})
+
+
+@app.exception_handler(redis.exceptions.RedisError)
+async def redis_unavailable_handler(request: Request, exc: redis.exceptions.RedisError):
+    return JSONResponse(status_code=503, content={"detail": f"redis unavailable: {exc}"})
+
+
 def init_db():
     with get_conn() as conn:
         conn.execute(
@@ -191,7 +208,7 @@ def verify_token(token: str) -> dict:
             raise ValueError("expired")
         return data
     except (ValueError, KeyError, TypeError):
-        raise HTTPException(401, "invalid or expired token")
+        raise HTTPException(401, "Invalid or expired token")
 
 
 def get_current_user(authorization: str | None = Header(None)) -> dict:
@@ -247,7 +264,7 @@ def rate_limiter(bucket: str, limit_per_min: int):
         if count == 1:
             redis_client.expire(key, 60)
         if count > limit_per_min:
-            raise HTTPException(429, "too many requests, slow down")
+            raise HTTPException(429, "Too many requests, slow down")
     return check
 
 
@@ -260,7 +277,7 @@ def register(body: RegisterRequest):
                 (body.email, hash_password(body.password)),
             ).fetchone()
         except psycopg.errors.UniqueViolation:
-            raise HTTPException(409, "email already registered")
+            raise HTTPException(409, "Email already registered")
         conn.commit()
         return {"token": make_token(str(row[0]), body.email), "user": {"id": row[0], "email": body.email}}
 
@@ -273,7 +290,7 @@ def login(body: LoginRequest):
                 body.email,)
         ).fetchone()
         if not row or not verify_password(body.password, row[1]):
-            raise HTTPException(401, "invalid email or password")
+            raise HTTPException(401, "Invalid email or password")
         return {"token": make_token(str(row[0]), body.email), "user": {"id": row[0], "email": body.email}}
 
 
@@ -330,7 +347,7 @@ def create_link(body: CreateLinkRequest, request: Request, user: dict | None = D
                     continue
             else:
                 raise HTTPException(
-                    500, "could not generate a unique code, retry")
+                    500, "Could not generate a unique code, retry")
 
     base = str(request.base_url)
     return {

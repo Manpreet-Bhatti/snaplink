@@ -30,7 +30,7 @@ export default function LinksPanel({
       setMaxClicks("");
       onChange();
     } catch {
-      setError("could not create link (invalid URL, or slug taken/reserved?)");
+      setError("Could not create link (invalid URL, or slug taken/reserved?)");
     }
   }
 
@@ -40,7 +40,8 @@ export default function LinksPanel({
   }
 
   async function remove(link: LinkSummary) {
-    if (!window.confirm(`Delete ${link.short_code}? This can't be undone.`)) return;
+    if (!window.confirm(`Delete ${link.short_code}? This can't be undone.`))
+      return;
     await deleteLink(link.short_code);
     onChange();
   }
@@ -95,10 +96,18 @@ export default function LinksPanel({
               <td>{l.click_count}</td>
               <td>{l.is_active ? "active" : "disabled"}</td>
               <td className="link-row-actions">
-                <button type="button" className="link-btn" onClick={() => toggleActive(l)}>
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => toggleActive(l)}
+                >
                   {l.is_active ? "Disable" : "Enable"}
                 </button>
-                <button type="button" className="link-btn danger" onClick={() => remove(l)}>
+                <button
+                  type="button"
+                  className="link-btn danger"
+                  onClick={() => remove(l)}
+                >
                   Delete
                 </button>
               </td>
