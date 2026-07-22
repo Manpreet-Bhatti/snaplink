@@ -14,8 +14,9 @@ export default function AuthForm({ onAuth }: { onAuth: (token: string) => void }
       const auth = mode === "login" ? await login(email, password) : await register(email, password);
       setToken(auth.token);
       onAuth(auth.token);
-    } catch {
-      setError(mode === "login" ? "invalid email or password" : "could not register (email taken?)");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "unknown error";
+      setError(message);
     }
   }
 
