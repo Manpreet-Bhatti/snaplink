@@ -22,39 +22,58 @@ export default function AuthForm({ onAuth }: { onAuth: (token: string) => void }
 
   return (
     <main className="auth">
-      <form className="card" onSubmit={handleSubmit}>
-        <h2>{mode === "login" ? "Log in" : "Create an account"}</h2>
-        <div className="form-row">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </div>
-        <div className="form-row">
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={8}
-          />
-        </div>
-        {error && <p className="error">{error}</p>}
-        <div className="form-row">
-          <button type="submit">{mode === "login" ? "Log in" : "Register"}</button>
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
-          >
-            {mode === "login" ? "Need an account? Register" : "Have an account? Log in"}
-          </button>
-        </div>
-      </form>
+      <div className="auth-shell">
+        <section className="auth-brand">
+          <span className="auth-brand-mark">SnapLink</span>
+          <h1>Short links, shared fast.</h1>
+          <p>Create, track, and manage your links in one place.</p>
+        </section>
+        <section className="auth-panel">
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <h2>{mode === "login" ? "Welcome back" : "Create an account"}</h2>
+            <p className="auth-subtitle">
+              {mode === "login" ? "Log in to continue" : "It takes less than a minute"}
+            </p>
+
+            <label className="field">
+              <span>Email</span>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </label>
+
+            <label className="field">
+              <span>Password</span>
+              <input
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </label>
+
+            {error && <p className="error">{error}</p>}
+
+            <button type="submit" className="auth-submit">
+              {mode === "login" ? "Log in" : "Register"}
+            </button>
+
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => setMode(mode === "login" ? "register" : "login")}
+            >
+              {mode === "login" ? "Don't have an account? Register" : "Have an account? Log in"}
+            </button>
+          </form>
+        </section>
+      </div>
     </main>
   );
 }

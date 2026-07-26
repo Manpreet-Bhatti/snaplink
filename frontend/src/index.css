@@ -1,5 +1,4 @@
 :root {
-  /* cherry blossom: white surface, sakura pink + bark brown marks — see frontend/PALETTE.md */
   --surface-1: #ffffff;
   --page: #fff5f7;
   --text-primary: #201209;
@@ -37,7 +36,11 @@ body {
   margin: 0;
   background: var(--page);
   color: var(--text-primary);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
 }
 
 table {
@@ -188,6 +191,10 @@ button.link-btn {
   padding: 4px 6px;
 }
 
+button.link-btn:hover {
+  color: var(--text-primary);
+}
+
 button.danger {
   color: var(--series-3);
 }
@@ -223,8 +230,107 @@ button.danger {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
 }
 
-.auth .card {
-  width: 320px;
+.auth-shell {
+  width: 100%;
+  max-width: 860px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(32, 18, 9, 0.12);
+}
+
+.auth-brand {
+  background: linear-gradient(160deg, var(--series-1), var(--series-4));
+  color: #fff;
+  padding: 40px 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+}
+
+.auth-brand-mark {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.auth-brand h1 {
+  font-size: 26px;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.auth-brand p {
+  margin: 0;
+  opacity: 0.9;
+  font-size: 14px;
+}
+
+.auth-panel {
+  padding: 40px 32px;
+  display: flex;
+  align-items: center;
+}
+
+.auth-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-form h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.auth-subtitle {
+  margin: -8px 0 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.field input {
+  padding: 10px 12px;
+  font-size: 14px;
+  transition: border-color 0.15s ease;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: var(--series-1);
+}
+
+.auth-submit {
+  margin-top: 6px;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+@media (max-width: 640px) {
+  .auth-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-brand {
+    padding: 28px 24px;
+  }
 }
